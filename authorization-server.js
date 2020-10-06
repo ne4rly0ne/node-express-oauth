@@ -50,9 +50,99 @@ app.use(timeout)
 app.use(bodyParser.json())
 app.use(bodyParser.urlencoded({ extended: true }))
 
-/*
-Your code here
-*/
+app.get('/authorize', (req, res) => {
+	const { client_id, scope } = req.query
+	if (!client_id || !scope) {
+		res.status(401).send("Error: client not authorized")
+		return
+	}
+	const client = clients[client_id]
+	if (!client) {
+		res.status(401).send("Error: client not authorized")
+		return
+	}
+
+	if (typeof scope !== "string" || !containsAll(client.scopes, scope.split(" "))) {
+		res.status(401).send("Error: client not authorized")
+		return
+	}
+
+	const requestId = randomString(); 
+	requests[requestId] = req.query;
+
+	res.render("login", {
+		client,
+		scope,
+		requestId
+	})
+})
+
+app.post('/approve', (req, res) => {
+	const { userName, password, requestId } = req.body;
+	if (!userName || users[userName] !== password) {
+		res.status(401).send("Error: user cannot login")
+		return
+	}
+	const clientReq = requests[requestId]
+	delete requests[requestId]
+	if (!clientReq) {
+		res.status(401).send("Error: user cannot login")
+		return
+	} 
+
+	const code = randomString();
+
+	authorizationCodes[code] = {
+		clientReq,
+		userName
+	}
+
+	const myURL = new URL(clientReq.redirect_uri);
+	myURL.searchParams.append('code', code)
+	myURL.searchParams.append('state', clientReq.state);
+	res.redirect(myURL.href)
+})
+
+app.post('/token', (req, res) => {
+	const { authorization } = req.headers;
+	const { code } = req.body
+	if (!authorization) {
+		res.status(401).send("Error: not authorized")
+		return
+	}
+	const decoded = decodeAuthCredentials(authorization);
+	const client = clients[decoded.clientId];
+	if(client.clientSecret !== decoded.clientSecret) {
+		res.status(401).send("Error: not authorized")
+		return
+	}
+	const authObject = authorizationCodes[code];
+	delete authorizationCodes[code]
+	if (!authObject) {
+		res.status(401).send("Error: not authorized")
+		return
+	} 
+
+	const { userName, clientReq } = authObject;
+
+	const token = jwt.sign(
+		{
+			userName: userName, 
+			scope: clientReq.scope
+		}, 
+		config.privateKey, 
+		{ 
+			algorithm: 'RS256', expiresIn: 300,
+			issuer: "http://localhost:" + config.port
+		}
+	)
+
+	res.json({
+		access_token: token,
+		token_type: "Bearer",
+		scope: clientReq.scope
+	});
+})
 
 const server = app.listen(config.port, "localhost", function () {
 	var host = server.address().address
